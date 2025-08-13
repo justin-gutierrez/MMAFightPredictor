@@ -148,12 +148,12 @@ def main():
             "train_red_win_rate": float(y.iloc[train_idx].mean()) if len(train_idx) > 0 else 0.0,
             "test_red_win_rate": float(y.iloc[test_idx].mean()) if len(test_idx) > 0 else 0.0,
             "train_date_range": {
-                "start": meta_df.iloc[train_idx]["Date"].min().strftime("%Y-%m-%d"),
-                "end": meta_df.iloc[train_idx]["Date"].max().strftime("%Y-%m-%d")
+                "start": pd.to_datetime(meta_df.iloc[train_idx]["Date"]).min().strftime("%Y-%m-%d"),
+                "end": pd.to_datetime(meta_df.iloc[train_idx]["Date"]).max().strftime("%Y-%m-%d")
             } if len(train_idx) > 0 else {},
             "test_date_range": {
-                "start": meta_df.iloc[test_idx]["Date"].min().strftime("%Y-%m-%d"),
-                "end": meta_df.iloc[test_idx]["Date"].max().strftime("%Y-%m-%d")
+                "start": pd.to_datetime(meta_df.iloc[test_idx]["Date"]).min().strftime("%Y-%m-%d"),
+                "end": pd.to_datetime(meta_df.iloc[test_idx]["Date"]).max().strftime("%Y-%m-%d")
             } if len(test_idx) > 0 else {}
         }
         
@@ -201,8 +201,8 @@ def main():
                 "cutoff_date": args.cutoff_date,
                 "total_samples": len(meta_df),
                 "date_range": {
-                    "start": meta_df["Date"].min().strftime("%Y-%m-%d"),
-                    "end": meta_df["Date"].max().strftime("%Y-%m-%d")
+                    "start": pd.to_datetime(meta_df["Date"]).min().strftime("%Y-%m-%d"),
+                    "end": pd.to_datetime(meta_df["Date"]).max().strftime("%Y-%m-%d")
                 }
             },
             "cv_splits": cv_summary,

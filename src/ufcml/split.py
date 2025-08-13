@@ -143,13 +143,16 @@ def get_split_summary(splits: List[Tuple[np.ndarray, np.ndarray]],
     Returns:
         Dictionary with split statistics
     """
+    # Ensure Date column is datetime
+    dates = pd.to_datetime(meta_df["Date"])
+    
     summary = {
         "n_folds": len(splits),
         "fold_details": [],
         "total_samples": len(meta_df),
         "date_range": {
-            "start": meta_df["Date"].min().strftime("%Y-%m-%d"),
-            "end": meta_df["Date"].max().strftime("%Y-%m-%d")
+            "start": dates.min().strftime("%Y-%m-%d"),
+            "end": dates.max().strftime("%Y-%m-%d")
         }
     }
     
@@ -166,14 +169,16 @@ def get_split_summary(splits: List[Tuple[np.ndarray, np.ndarray]],
         
         # Add date ranges for this fold
         if len(train_idx) > 0:
+            train_dates = pd.to_datetime(meta_df.iloc[train_idx]["Date"])
             fold_info["train_date_range"] = {
-                "start": meta_df.iloc[train_idx]["Date"].min().strftime("%Y-%m-%d"),
-                "end": meta_df.iloc[train_idx]["Date"].max().strftime("%Y-%m-%d")
+                "start": train_dates.min().strftime("%Y-%m-%d"),
+                "end": train_dates.max().strftime("%Y-%m-%d")
             }
         if len(valid_idx) > 0:
+            valid_dates = pd.to_datetime(meta_df.iloc[valid_idx]["Date"])
             fold_info["valid_date_range"] = {
-                "start": meta_df.iloc[valid_idx]["Date"].min().strftime("%Y-%m-%d"),
-                "end": meta_df.iloc[valid_idx]["Date"].max().strftime("%Y-%m-%d")
+                "start": valid_dates.min().strftime("%Y-%m-%d"),
+                "end": valid_dates.max().strftime("%Y-%m-%d")
             }
         
         summary["fold_details"].append(fold_info)

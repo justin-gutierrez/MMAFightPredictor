@@ -21,6 +21,7 @@ from . import (
     predict,
     api,
     utils,
+    calibration,
 )
 
 __all__ = [

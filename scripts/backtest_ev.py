@@ -2,6 +2,11 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import json
+import sys
+
+# Add src to path for imports
+sys.path.append(str(Path(__file__).parent.parent / "src"))
+
 from ufcml.utils import add_vig_free_probs
 
 def kelly_fraction(p, q, b):
@@ -36,7 +41,10 @@ def backtest_ev(preds_df, edge_threshold=0.03, stake=1.0, kelly=False):
     results = []
     for side in ["Red", "Blue"]:
         fair_col = f"{side}FairP"
-        model_col = "ModelProb" if side == "Red" else (1 - df["ModelProb"])
+        if side == "Red":
+            model_col = df["ModelProb"].values
+        else:
+            model_col = (1 - df["ModelProb"]).values
         odds_col = f"{side}Odds"
 
         # decimal odds

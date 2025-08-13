@@ -39,6 +39,12 @@ def clean_prefight_columns(df: pd.DataFrame) -> pd.DataFrame:
         "RPFPRank", "BPFPRank", "RedOdds", "BlueOdds", "Winner"
     ]
     
+    # Add optional historical columns if present (for computing form features)
+    optional_hist_cols = ["Finish", "FinishDetails"]
+    for col in optional_hist_cols:
+        if col in df.columns and col not in columns_to_keep:
+            columns_to_keep.append(col)
+    
     # Filter to only keep columns that exist in the DataFrame
     existing_columns = [col for col in columns_to_keep if col in df.columns]
     df_clean = df[existing_columns].copy()

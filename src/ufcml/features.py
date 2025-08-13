@@ -6,6 +6,10 @@ import pandas as pd
 import numpy as np
 from typing import Tuple, List, Optional
 
+# Constants for finish type classification
+FINISH_KO_LABELS = {"KO/TKO", "KO", "TKO", "TKO - Doctor's Stoppage", "Doctor Stoppage", "TKO - Doctor Stoppage"}
+FINISH_SUB_LABELS = {"Submission", "SUB"}
+
 
 def add_stance_matchup(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -148,6 +152,160 @@ def encode_categoricals(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
     return df, feature_columns
 
 
+def _normalize_long_view(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Convert wide fight rows into per-fighter long rows.
+    Columns required: Date, RedFighter, BlueFighter, Winner.
+    Optional: Finish (to derive recent KO/SUB shares).
+    Output columns: [Date, Fighter, Opponent, Won, FinishType]
+    """
+    base_cols = ["Date", "RedFighter", "BlueFighter", "Winner"]
+    for c in base_cols:
+        if c not in df.columns:
+            raise ValueError(f"Required column missing for long view: {c}")
+
+    d = df.copy()
+    d["Date"] = pd.to_datetime(d["Date"])
+
+    # Map finish type into coarse labels (optional)
+    finish = d["Finish"].fillna("DEC") if "Finish" in d.columns else pd.Series(["DEC"] * len(d), index=d.index)
+    # Standardize a coarse finish label per bout, used for both fighters equally
+    finish_type = np.where(finish.astype(str).str.upper().isin({s.upper() for s in FINISH_KO_LABELS}), "KO",
+                    np.where(finish.astype(str).str.upper().str.contains("SUB"), "SUB", "DEC"))
+
+    # Red rows
+    red = pd.DataFrame({
+        "Date": d["Date"].values,
+        "Fighter": d["RedFighter"].values,
+        "Opponent": d["BlueFighter"].values,
+        "Won": (d["Winner"].astype(str).str.upper() == "RED").astype(int).values,
+        "FinishType": finish_type
+    })
+
+    # Blue rows
+    blue = pd.DataFrame({
+        "Date": d["Date"].values,
+        "Fighter": d["BlueFighter"].values,
+        "Opponent": d["RedFighter"].values,
+        "Won": (d["Winner"].astype(str).str.upper() == "BLUE").astype(int).values,
+        "FinishType": finish_type
+    })
+
+    long_df = pd.concat([red, blue], ignore_index=True)
+    long_df = long_df.sort_values(["Fighter", "Date"]).reset_index(drop=True)
+    return long_df
+
+
+def _rolling_last3_features(g: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute lagged rolling features for a single fighter, sorted by Date.
+    Ensures no leakage via shift(1).
+    """
+    g = g.sort_values("Date").copy()
+    # last 3 fights win rate (shifted)
+    g["RecentWinRate3"] = g["Won"].rolling(window=3, min_periods=1).mean().shift(1)
+
+    # recent KO/SUB share (based on last 3 fights) if FinishType present
+    if "FinishType" in g.columns:
+        g["is_ko"] = (g["FinishType"] == "KO").astype(int)
+        g["is_sub"] = (g["FinishType"] == "SUB").astype(int)
+        g["RecentKOShare3"] = g["is_ko"].rolling(window=3, min_periods=1).mean().shift(1)
+        g["RecentSubShare3"] = g["is_sub"].rolling(window=3, min_periods=1).mean().shift(1)
+    else:
+        g["RecentKOShare3"] = np.nan
+        g["RecentSubShare3"] = np.nan
+
+    # fights in past 365 days (strictly before current bout)
+    g["FightsPast365"] = (
+        g.set_index("Date")
+         .assign(one=1)
+         .groupby(level=0)["one"]
+         .transform(lambda s: 1)  # placeholder; we'll compute with rolling window below
+    )
+    # efficient time-based count: for each row, count prior rows within 365 days
+    # We'll use expanding window and search; vectorized approach:
+    dates = g["Date"].values.astype("datetime64[D]")
+    counts = np.zeros(len(g), dtype=int)
+    start = 0
+    for i in range(len(g)):
+        # move start until dates[i] - dates[start] < 365 days
+        while start < i and (dates[i] - dates[start]).astype("timedelta64[D]").astype(int) >= 365:
+            start += 1
+        counts[i] = i - start  # number of prior fights within 365d
+    g["FightsPast365"] = pd.Series(counts, index=g.index)
+
+    # days since last fight (lagged)
+    g["DaysSinceLastFight"] = g["Date"].diff().dt.days.shift(0)  # diff from previous
+    g["DaysSinceLastFight"] = g["DaysSinceLastFight"].shift(1)   # shift so current bout sees prior gap only
+
+    # Fill early NaNs
+    g["RecentWinRate3"] = g["RecentWinRate3"].fillna(0.5)  # neutral prior
+    g["RecentKOShare3"] = g["RecentKOShare3"].fillna(0.0)
+    g["RecentSubShare3"] = g["RecentSubShare3"].fillna(0.0)
+    g["FightsPast365"] = g["FightsPast365"].fillna(0).astype(int)
+    g["DaysSinceLastFight"] = g["DaysSinceLastFight"].fillna(400)  # large layoff default
+
+    return g
+
+
+def _compute_form_table(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Build long per-fighter table and compute lagged form metrics.
+    Returns a dataframe with columns:
+      Fighter, Date, RecentWinRate3, FightsPast365, DaysSinceLastFight, RecentKOShare3, RecentSubShare3
+    """
+    long_df = _normalize_long_view(df)
+    long_df = long_df.groupby("Fighter", group_keys=False).apply(_rolling_last3_features)
+    cols = ["Fighter", "Date", "RecentWinRate3", "FightsPast365", "DaysSinceLastFight", "RecentKOShare3", "RecentSubShare3"]
+    return long_df[cols]
+
+
+def add_short_term_form_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Merge short-term form features back to the wide fight table and create DIFF features:
+      - RecentWinRate3Dif
+      - FightsPast365Dif
+      - DaysSinceLastFightDif
+      - RecentKOShare3Dif (if Finish present)
+      - RecentSubShare3Dif (if Finish present)
+    Also returns the df with intermediate per-corner columns dropped, keeping only diffs.
+    """
+    if not {"RedFighter", "BlueFighter", "Date", "Winner"}.issubset(df.columns):
+        raise ValueError("add_short_term_form_features requires RedFighter, BlueFighter, Date, Winner columns.")
+
+    form_tbl = _compute_form_table(df)
+
+    d = df.copy()
+    d["Date"] = pd.to_datetime(d["Date"])
+
+    # Merge for Red
+    d = d.merge(form_tbl.add_prefix("Red_"), left_on=["RedFighter", "Date"],
+                right_on=["Red_Fighter", "Red_Date"], how="left")
+    # Merge for Blue
+    d = d.merge(form_tbl.add_prefix("Blue_"), left_on=["BlueFighter", "Date"],
+                right_on=["Blue_Fighter", "Blue_Date"], how="left")
+
+    # Compute diffs (Red - Blue)
+    d["RecentWinRate3Dif"]     = d["Red_RecentWinRate3"] - d["Blue_RecentWinRate3"]
+    d["FightsPast365Dif"]      = d["Red_FightsPast365"] - d["Blue_FightsPast365"]
+    d["DaysSinceLastFightDif"] = d["Red_DaysSinceLastFight"] - d["Blue_DaysSinceLastFight"]
+    d["RecentKOShare3Dif"]     = d["Red_RecentKOShare3"] - d["Blue_RecentKOShare3"]
+    d["RecentSubShare3Dif"]    = d["Red_RecentSubShare3"] - d["Blue_RecentSubShare3"]
+
+    # Drop intermediate merged columns
+    drop_cols = [c for c in d.columns if c.startswith("Red_") or c.startswith("Blue_")]
+    d = d.drop(columns=drop_cols, errors="ignore")
+
+    # Fill any residual NaNs (e.g., fighters with <1 prior bout)
+    d["RecentWinRate3Dif"]     = d["RecentWinRate3Dif"].fillna(0.0)
+    d["FightsPast365Dif"]      = d["FightsPast365Dif"].fillna(0)
+    d["DaysSinceLastFightDif"] = d["DaysSinceLastFightDif"].fillna(0.0)
+    d["RecentKOShare3Dif"]     = d["RecentKOShare3Dif"].fillna(0.0)
+    d["RecentSubShare3Dif"]    = d["RecentSubShare3Dif"].fillna(0.0)
+
+    return d
+
+
 def assemble_feature_matrix(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
     """
     Assemble complete feature matrix for machine learning.
@@ -168,15 +326,26 @@ def assemble_feature_matrix(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series, 
     df = add_stance_matchup(df)
     df = add_rank_diffs(df, drop_original=False)
     
+    # Add short-term form features (after other feature engineering)
+    df = add_short_term_form_features(df)
+    
     # Select numeric difference features
     numeric_diff_features = [
         "AgeDif", "HeightDif", "ReachDif", "WinStreakDif", "LoseStreakDif",
         "LongestWinStreakDif", "WinDif", "LossDif", "TotalRoundDif", 
-        "TotalTitleBoutDif", "KODif", "SubDif", "SigStrDif", "AvgSubAttDif", "AvgTDDif"
+        "TotalTitleBoutDif", "KODif", "SubDif", "SigStrDif", "AvgSubAttDif", "AvgTDDif",
+        # Elo
+        "EloDiff",
+        # NEW short-term form diffs
+        "RecentWinRate3Dif", "FightsPast365Dif", "DaysSinceLastFightDif",
+        "RecentKOShare3Dif", "RecentSubShare3Dif"
     ]
     
-    # Add EloDiff if present
-    if "EloDiff" in df.columns:
+    # Only keep those that exist
+    numeric_diff_features = [c for c in numeric_diff_features if c in df.columns]
+    
+    # Add EloDiff if present (keep for backward compatibility)
+    if "EloDiff" in df.columns and "EloDiff" not in numeric_diff_features:
         numeric_diff_features.append("EloDiff")
     
     # Add odds if present (optional)

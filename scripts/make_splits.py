@@ -49,8 +49,20 @@ def main():
     parser.add_argument(
         "--n-folds", 
         type=int, 
-        default=5,
-        help="Number of cross-validation folds (default: 5)"
+        default=3,
+        help="Number of cross-validation folds (default: 3)"
+    )
+    parser.add_argument(
+        "--group-by",
+        choices=["month", "date"],
+        default="month",
+        help="Grouping strategy for time-based splits (default: month)"
+    )
+    parser.add_argument(
+        "--min-valid-size",
+        type=int,
+        default=150,
+        help="Minimum validation set size for month-based splits (default: 150)"
     )
     parser.add_argument(
         "--cutoff-date", 
@@ -88,6 +100,8 @@ def main():
     print(f"Target file: {target_path}")
     print(f"Output directory: {output_path}")
     print(f"Number of folds: {args.n_folds}")
+    print(f"Group by: {args.group_by}")
+    print(f"Min valid size: {args.min_valid_size}")
     print(f"Cutoff date: {args.cutoff_date}")
     
     try:
@@ -121,8 +135,13 @@ def main():
         print(f"Date range: {meta_df['Date'].min()} to {meta_df['Date'].max()}")
         
         # Create time-based cross-validation splits
-        print(f"\nCreating {args.n_folds}-fold time-based splits...")
-        cv_splits = time_based_split(meta_df, y, n_folds=args.n_folds)
+        print(f"\nCreating {args.n_folds}-fold time-based splits (grouped by {args.group_by})...")
+        cv_splits = time_based_split(
+            meta_df, y, 
+            n_folds=args.n_folds,
+            group_by=args.group_by,
+            min_valid_size=args.min_valid_size
+        )
         
         print(f"Created {len(cv_splits)} CV folds")
         for i, (train_idx, valid_idx) in enumerate(cv_splits):

@@ -8,24 +8,27 @@ from typing import List, Tuple, Dict, Any
 from datetime import datetime
 
 
-def time_based_split(meta_df: pd.DataFrame, y: pd.Series, n_folds: int = 5) -> List[Tuple[np.ndarray, np.ndarray]]:
+def time_based_split(meta_df: pd.DataFrame, y: pd.Series, n_folds: int = 3, 
+                    group_by: str = "month", min_valid_size: int = 150) -> List[Tuple[np.ndarray, np.ndarray]]:
     """
     Create time-based cross-validation splits ensuring no future data leakage.
     
     This function creates rolling folds where each fold uses all data up to a certain
-    date for training and the next chunk for validation. This prevents using future
+    time period for training and the next chunk for validation. This prevents using future
     information to predict past events.
     
     Args:
         meta_df: DataFrame with Date column for temporal ordering
         y: Target variable series
-        n_folds: Number of cross-validation folds (default: 5)
+        n_folds: Number of cross-validation folds (default: 3)
+        group_by: Grouping strategy - "month" or "date" (default: "month")
+        min_valid_size: Minimum validation set size (default: 150)
         
     Returns:
         List of tuples: [(train_idx, valid_idx), ...] for each fold
         
     Example:
-        >>> splits = time_based_split(meta_df, y, n_folds=5)
+        >>> splits = time_based_split(meta_df, y, n_folds=3, group_by="month")
         >>> print(f"Created {len(splits)} time-based folds")
         >>> for i, (train_idx, valid_idx) in enumerate(splits):
         ...     print(f"Fold {i+1}: Train {len(train_idx)}, Valid {len(valid_idx)}")
@@ -37,6 +40,85 @@ def time_based_split(meta_df: pd.DataFrame, y: pd.Series, n_folds: int = 5) -> L
     # Convert Date to datetime if it's not already
     dates = pd.to_datetime(meta_df["Date"])
     
+    if group_by == "month":
+        return _month_based_split(meta_df, dates, n_folds, min_valid_size)
+    else:
+        return _date_based_split(meta_df, dates, n_folds)
+
+
+def _month_based_split(meta_df: pd.DataFrame, dates: pd.Series, n_folds: int, min_valid_size: int) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """
+    Create month-based cross-validation splits.
+    
+    Args:
+        meta_df: DataFrame with fight data
+        dates: Series of datetime dates
+        n_folds: Number of cross-validation folds
+        min_valid_size: Minimum validation set size
+        
+    Returns:
+        List of tuples: [(train_idx, valid_idx), ...] for each fold
+    """
+    # Create month periods for grouping
+    month_periods = dates.dt.to_period("M")
+    
+    # Get unique months and sort them
+    unique_months = sorted(month_periods.unique())
+    n_months = len(unique_months)
+    
+    if n_folds > n_months:
+        raise ValueError(f"Number of folds ({n_folds}) cannot exceed number of unique months ({n_months})")
+    
+    # Calculate month boundaries for folds
+    months_per_fold = n_months // n_folds
+    remainder = n_months % n_folds
+    
+    splits = []
+    
+    for fold in range(n_folds):
+        # Calculate start and end month indices for this fold
+        start_month_idx = fold * months_per_fold + min(fold, remainder)
+        end_month_idx = start_month_idx + months_per_fold + (1 if fold < remainder else 0)
+        
+        # Get the months for this fold
+        fold_months = unique_months[start_month_idx:end_month_idx]
+        
+        # Find indices for training (before fold months) and validation (fold months)
+        if fold == 0:
+            # First fold: no training data, only validation
+            train_indices = np.array([], dtype=int)
+        else:
+            # Training: all data before the fold months
+            train_mask = month_periods < fold_months[0]
+            train_indices = meta_df[train_mask].index.values
+        
+        # Validation: data in the fold months
+        valid_mask = month_periods.isin(fold_months)
+        valid_indices = meta_df[valid_mask].index.values
+        
+        # Only add fold if validation set meets minimum size
+        if len(valid_indices) >= min_valid_size:
+            splits.append((train_indices, valid_indices))
+            print(f"  Fold {fold + 1}: Train {len(train_indices)}, Valid {len(valid_indices)} "
+                  f"(Months: {fold_months[0]} to {fold_months[-1]})")
+        else:
+            print(f"  Fold {fold + 1}: Skipped - validation size {len(valid_indices)} < {min_valid_size}")
+    
+    return splits
+
+
+def _date_based_split(meta_df: pd.DataFrame, dates: pd.Series, n_folds: int) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """
+    Create date-based cross-validation splits (original implementation).
+    
+    Args:
+        meta_df: DataFrame with fight data
+        dates: Series of datetime dates
+        n_folds: Number of cross-validation folds
+        
+    Returns:
+        List of tuples: [(train_idx, valid_idx), ...] for each fold
+    """
     # Sort by date ascending
     sorted_indices = dates.sort_values().index
     sorted_dates = dates.loc[sorted_indices]

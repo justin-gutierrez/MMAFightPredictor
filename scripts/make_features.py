@@ -35,9 +35,9 @@ def main():
         help="Output directory for feature matrix (default: data/processed)"
     )
     parser.add_argument(
-        "--add-elo", 
+        "--no-elo", 
         action="store_true",
-        help="Add Elo ratings to the feature matrix"
+        help="Disable Elo ratings (default: Elo ratings are enabled)"
     )
     parser.add_argument(
         "--save-format",
@@ -63,7 +63,7 @@ def main():
     print(f"Starting feature engineering pipeline...")
     print(f"Input: {input_path}")
     print(f"Output: {output_path}")
-    print(f"Add Elo: {args.add_elo}")
+    print(f"Add Elo: {not args.no_elo}")
     print(f"Save format: {args.save_format}")
     
     try:
@@ -73,21 +73,26 @@ def main():
         print(f"Data shape: {df.shape}")
         print(f"Columns: {list(df.columns)}")
         
-        # Add Elo ratings if requested
-        if args.add_elo:
+        # Add Elo ratings (enabled by default unless --no-elo is specified)
+        if not args.no_elo:
             print("Adding Elo ratings...")
             # Ensure data is sorted by date for Elo calculation
             df_sorted = df.sort_values("Date").reset_index(drop=True)
             df_with_elo = build_elo(df_sorted)
             
-            # Merge Elo ratings back to original data
+            # Merge Elo ratings back to original data using Date, RedFighter, BlueFighter
             elo_columns = ["RedElo", "BlueElo", "EloDiff"]
-            df = pd.concat([df, df_with_elo[elo_columns]], axis=1)
+            df = df.merge(
+                df_with_elo[["Date", "RedFighter", "BlueFighter"] + elo_columns], 
+                on=["Date", "RedFighter", "BlueFighter"], 
+                how="left"
+            )
             
             print("Elo ratings added successfully")
             print(f"Elo columns: {elo_columns}")
+            print(f"Data shape after Elo merge: {df.shape}")
         else:
-            print("Skipping Elo ratings")
+            print("Skipping Elo ratings (--no-elo flag specified)")
         
         # Assemble feature matrix
         print("Assembling feature matrix...")
@@ -136,7 +141,7 @@ def main():
         print(f"\nSample features (first 10):")
         print(X.columns[:10].tolist())
         
-        if args.add_elo:
+        if not args.no_elo:
             print(f"\nElo features included: {[col for col in X.columns if 'Elo' in col]}")
         
     except Exception as e:

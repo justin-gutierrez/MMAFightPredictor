@@ -91,8 +91,8 @@ def main():
     parser.add_argument(
         "--n-folds", 
         type=int, 
-        default=5,
-        help="Number of cross-validation folds (default: 5)"
+        default=3,
+        help="Number of cross-validation folds (default: 3)"
     )
     parser.add_argument(
         "--seed", 

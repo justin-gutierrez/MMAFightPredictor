@@ -8,103 +8,99 @@ from typing import List, Tuple, Dict, Any
 from datetime import datetime
 
 
-def time_based_split(meta_df: pd.DataFrame, y: pd.Series, n_folds: int = 3, 
-                    group_by: str = "month", min_valid_size: int = 150) -> List[Tuple[np.ndarray, np.ndarray]]:
-    """
-    Create time-based cross-validation splits ensuring no future data leakage.
-    
-    This function creates rolling folds where each fold uses all data up to a certain
-    time period for training and the next chunk for validation. This prevents using future
-    information to predict past events.
-    
-    Args:
-        meta_df: DataFrame with Date column for temporal ordering
-        y: Target variable series
-        n_folds: Number of cross-validation folds (default: 3)
-        group_by: Grouping strategy - "month" or "date" (default: "month")
-        min_valid_size: Minimum validation set size (default: 150)
-        
-    Returns:
-        List of tuples: [(train_idx, valid_idx), ...] for each fold
-        
-    Example:
-        >>> splits = time_based_split(meta_df, y, n_folds=3, group_by="month")
-        >>> print(f"Created {len(splits)} time-based folds")
-        >>> for i, (train_idx, valid_idx) in enumerate(splits):
-        ...     print(f"Fold {i+1}: Train {len(train_idx)}, Valid {len(valid_idx)}")
-    """
+def time_based_split(
+    meta_df: pd.DataFrame,
+    y: pd.Series,
+    n_folds: int = 3,
+    group_by: str = "month",
+    min_train_size: int = 2500,
+    min_valid_size: int = 800,
+) -> List[Tuple[np.ndarray, np.ndarray]]:
     # Ensure meta_df has Date column
     if "Date" not in meta_df.columns:
         raise ValueError("meta_df must contain 'Date' column")
-    
-    # Convert Date to datetime if it's not already
+
     dates = pd.to_datetime(meta_df["Date"])
-    
+
     if group_by == "month":
-        return _month_based_split(meta_df, dates, n_folds, min_valid_size)
+        return _month_based_split(meta_df, dates, n_folds, min_train_size, min_valid_size)
     else:
         return _date_based_split(meta_df, dates, n_folds)
 
 
-def _month_based_split(meta_df: pd.DataFrame, dates: pd.Series, n_folds: int, min_valid_size: int) -> List[Tuple[np.ndarray, np.ndarray]]:
+def _month_based_split(
+    meta_df: pd.DataFrame,
+    dates: pd.Series,
+    n_folds: int,
+    min_train_size: int,
+    min_valid_size: int
+) -> List[Tuple[np.ndarray, np.ndarray]]:
     """
-    Create month-based cross-validation splits.
-    
-    Args:
-        meta_df: DataFrame with fight data
-        dates: Series of datetime dates
-        n_folds: Number of cross-validation folds
-        min_valid_size: Minimum validation set size
-        
-    Returns:
-        List of tuples: [(train_idx, valid_idx), ...] for each fold
+    Expanding-window, month-grouped CV:
+      - Start with a warm-up training window (>= min_train_size rows).
+      - Next contiguous months become validation (>= min_valid_size rows).
+      - Append (train, valid) fold.
+      - Expand training to include that validation, then repeat until n_folds or data exhausted.
     """
-    # Create month periods for grouping
+    # Group rows by month in chronological order
     month_periods = dates.dt.to_period("M")
-    
-    # Get unique months and sort them
-    unique_months = sorted(month_periods.unique())
-    n_months = len(unique_months)
-    
-    if n_folds > n_months:
-        raise ValueError(f"Number of folds ({n_folds}) cannot exceed number of unique months ({n_months})")
-    
-    # Calculate month boundaries for folds
-    months_per_fold = n_months // n_folds
-    remainder = n_months % n_folds
-    
-    splits = []
-    
-    for fold in range(n_folds):
-        # Calculate start and end month indices for this fold
-        start_month_idx = fold * months_per_fold + min(fold, remainder)
-        end_month_idx = start_month_idx + months_per_fold + (1 if fold < remainder else 0)
-        
-        # Get the months for this fold
-        fold_months = unique_months[start_month_idx:end_month_idx]
-        
-        # Find indices for training (before fold months) and validation (fold months)
-        if fold == 0:
-            # First fold: no training data, only validation
-            train_indices = np.array([], dtype=int)
-        else:
-            # Training: all data before the fold months
-            train_mask = month_periods < fold_months[0]
-            train_indices = meta_df[train_mask].index.values
-        
-        # Validation: data in the fold months
-        valid_mask = month_periods.isin(fold_months)
-        valid_indices = meta_df[valid_mask].index.values
-        
-        # Only add fold if validation set meets minimum size
-        if len(valid_indices) >= min_valid_size:
-            splits.append((train_indices, valid_indices))
-            print(f"  Fold {fold + 1}: Train {len(train_indices)}, Valid {len(valid_indices)} "
-                  f"(Months: {fold_months[0]} to {fold_months[-1]})")
-        else:
-            print(f"  Fold {fold + 1}: Skipped - validation size {len(valid_indices)} < {min_valid_size}")
-    
-    return splits
+    g = meta_df.assign(_month=month_periods).sort_values("Date").reset_index()
+    groups: list[tuple[pd.Period, np.ndarray]] = []
+    for m, dfm in g.groupby("_month", sort=True):
+        groups.append((m, dfm["index"].to_numpy()))
+
+    if not groups:
+        return []
+
+    sizes = [len(ix) for _, ix in groups]
+
+    # Build initial warm-up training window
+    train_end = 0
+    train_count = 0
+    while train_end < len(groups) and train_count < min_train_size:
+        train_count += sizes[train_end]
+        train_end += 1
+
+    if train_count < min_train_size:
+        raise ValueError(
+            f"Not enough data to satisfy min_train_size={min_train_size}. "
+            f"Only {train_count} rows available."
+        )
+
+    folds: List[Tuple[np.ndarray, np.ndarray]] = []
+
+    # Build up to n_folds validation windows
+    while len(folds) < n_folds and train_end < len(groups):
+        # Accumulate months for validation until we reach min_valid_size
+        valid_start = train_end
+        valid_end = valid_start
+        valid_count = 0
+        while valid_end < len(groups) and valid_count < min_valid_size:
+            valid_count += sizes[valid_end]
+            valid_end += 1
+
+        if valid_count == 0:
+            break  # no more data left for a validation window
+
+        # Stitch indices
+        train_idx = np.concatenate([ix for _, ix in groups[:train_end]])
+        valid_idx = np.concatenate([ix for _, ix in groups[valid_start:valid_end]])
+
+        # Safety: ensure time ordering (max train date < min valid date)
+        max_train_date = dates.iloc[train_idx].max()
+        min_valid_date = dates.iloc[valid_idx].min()
+        if max_train_date >= min_valid_date:
+            raise ValueError(
+                "Time ordering violated: max train date "
+                f"{max_train_date} >= min valid date {min_valid_date}"
+            )
+
+        folds.append((train_idx, valid_idx))
+
+        # Expand training to include the just-used validation window
+        train_end = valid_end
+
+    return folds
 
 
 def _date_based_split(meta_df: pd.DataFrame, dates: pd.Series, n_folds: int) -> List[Tuple[np.ndarray, np.ndarray]]:
@@ -361,3 +357,47 @@ def save_splits(splits: List[Tuple[np.ndarray, np.ndarray]],
     
     print(f"Saved {len(splits)} splits to {output_path}")
     print(f"Summary saved to: {output_path / summary_filename}")
+
+
+def load_splits(splits_dir: str) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """
+    Load saved split indices from JSON files.
+    
+    Args:
+        splits_dir: Directory containing split files
+        
+    Returns:
+        List of (train_idx, valid_idx) tuples
+        
+    Example:
+        >>> splits = load_splits("data/processed/splits")
+    """
+    import json
+    from pathlib import Path
+    
+    splits_path = Path(splits_dir)
+    if not splits_path.exists():
+        raise FileNotFoundError(f"Splits directory not found: {splits_dir}")
+    
+    # Find all fold files
+    fold_files = list(splits_path.glob("*_fold_*.json"))
+    if not fold_files:
+        raise FileNotFoundError(f"No fold files found in {splits_dir}")
+    
+    # Sort by fold number
+    fold_files.sort(key=lambda x: int(x.stem.split('_')[-1]))
+    
+    splits = []
+    for fold_file in fold_files:
+        with open(fold_file, 'r') as f:
+            fold_data = json.load(f)
+            
+        train_idx = np.array(fold_data["train_indices"])
+        valid_idx = np.array(fold_data["valid_indices"])
+        splits.append((train_idx, valid_idx))
+    
+    print(f"Loaded {len(splits)} splits from {splits_dir}")
+    for i, (train_idx, valid_idx) in enumerate(splits):
+        print(f"  Split {i+1}: Train {len(train_idx)}, Valid {len(valid_idx)}")
+    
+    return splits

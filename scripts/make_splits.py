@@ -59,10 +59,16 @@ def main():
         help="Grouping strategy for time-based splits (default: month)"
     )
     parser.add_argument(
+        "--min-train-size",
+        type=int,
+        default=2500,
+        help="Minimum training set size for month-based splits (default: 2500)"
+    )
+    parser.add_argument(
         "--min-valid-size",
         type=int,
-        default=150,
-        help="Minimum validation set size for month-based splits (default: 150)"
+        default=800,
+        help="Minimum validation set size for month-based splits (default: 800)"
     )
     parser.add_argument(
         "--cutoff-date", 
@@ -101,6 +107,7 @@ def main():
     print(f"Output directory: {output_path}")
     print(f"Number of folds: {args.n_folds}")
     print(f"Group by: {args.group_by}")
+    print(f"Min train size: {args.min_train_size}")
     print(f"Min valid size: {args.min_valid_size}")
     print(f"Cutoff date: {args.cutoff_date}")
     
@@ -140,6 +147,7 @@ def main():
             meta_df, y, 
             n_folds=args.n_folds,
             group_by=args.group_by,
+            min_train_size=args.min_train_size,
             min_valid_size=args.min_valid_size
         )
         

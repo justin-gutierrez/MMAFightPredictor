@@ -56,21 +56,27 @@ def train_xgb(X: pd.DataFrame,
     print(f"Training set: {X_train_split.shape[0]} samples, {X_train_split.shape[1]} features")
     print(f"Validation set: {X_valid_split.shape[0]} samples")
     
-    # Initialize XGBoost classifier
+    # Initialize XGBoost classifier with robust parameters
     model = xgb.XGBClassifier(
         n_estimators=2000,
         learning_rate=0.03,
-        max_depth=5,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        reg_lambda=1.0,
-        reg_alpha=0.0,
+        max_depth=4,            # ↓ from 5 to reduce overfitting
+        min_child_weight=2,     # new: minimum sum of instance weight in a child
+        subsample=0.9,          # ↑ from 0.8 for more stability
+        colsample_bytree=0.9,   # ↑ from 0.8 for more stability
+        reg_lambda=1.5,         # ↑ from 1.0 for stronger regularization
+        gamma=0.1,              # new: minimum loss reduction for split
         eval_metric="logloss",
         n_jobs=n_jobs,
         random_state=seed,
         early_stopping_rounds=100,
         verbose=0
     )
+    
+    # Set base score to training data base rate for better calibration
+    base_rate = float(y_train_split.mean())
+    model.set_params(base_score=base_rate)
+    print(f"Set base score to training data rate: {base_rate:.3f}")
     
     # Train model with early stopping
     print("Training XGBoost model...")

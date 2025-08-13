@@ -10,7 +10,7 @@ import xgboost as xgb
 from xgboost import XGBClassifier
 import joblib
 from pathlib import Path
-from .utils import add_odds_implied_probs
+from .utils import add_odds_implied_probs, add_market_features
 
 
 def train_xgb(X: pd.DataFrame, 
@@ -389,9 +389,9 @@ def train_market_stacked(
         X_va_nodds = X_va.drop(columns=odds_cols, errors="ignore")
         X_va["SkillPred"] = skill_model_k.predict_proba(X_va_nodds)[:, 1]
 
-        # Add odds implied probabilities and diffs
-        X_tr = add_odds_implied_probs(X_tr)
-        X_va = add_odds_implied_probs(X_va)
+        # Add raw implied + vig-free market features
+        X_tr = add_market_features(X_tr, use_vig_free=True)
+        X_va = add_market_features(X_va, use_vig_free=True)
 
         if not include_other_features:
             keep = [
